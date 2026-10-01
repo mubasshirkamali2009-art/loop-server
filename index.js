@@ -14,14 +14,23 @@ app.use(cors({ origin: process.env.CLIENT_URL || "http://localhost:3000", creden
 app.use(express.json({ limit: "1mb" }));
 
 // ---------- Database ----------
-const client = new MongoClient(process.env.MONGO_DB_URI);
+const cleanEnv = (val) => (val || "").split("#")[0].trim().replace(/^["']|["']$/g, "");
+const mongoUri = cleanEnv(process.env.MONGO_DB_URI);
+const client = new MongoClient(mongoUri);
 const db = client.db("loop");
-const users = db.collection("user");          // better-auth এর collection
-const sessions = db.collection("session");    // better-auth এর collection
+const users = db.collection("user");          // better-auth collection
+const sessions = db.collection("session");    // better-auth collection
 const orgs = db.collection("organizations");
 const members = db.collection("members");     // userId -> organizationId + role
 const feedbackCol = db.collection("feedback");
+const chatMessagesCol = db.collection("chat_messages");
 const reportsCol = db.collection("reports");
+
+// Tenant Collection Aliases
+const organization = orgs;
+const member = members;
+const feedback = feedbackCol;
+const chat_messages = chatMessagesCol;
 
 // ---------- Constants ----------
 const ROLES = ["org_admin", "manager", "analyst", "viewer"];
@@ -44,9 +53,8 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- Gemini ----------
-// ফাঁকা জায়গা ও উদ্ধৃতি চিহ্ন বাদ দিয়ে key পড়ে
-const GEMINI_KEY = (process.env.GEMINI_API_KEY || "").trim().replace(/^["']|["']$/g, "");
-console.log(GEMINI_KEY ? `Gemini key loaded (starts with "${GEMINI_KEY.slice(0, 4)}", ${GEMINI_KEY.length} characters)` : "WARNING: GEMINI_API_KEY is missing in .env - AI features will fail.");
+const GEMINI_KEY = cleanEnv(process.env.GEMINI_API_KEY);
+console.log(GEMINI_KEY ? "Gemini key successfully loaded from process.env." : "WARNING: GEMINI_API_KEY is missing in process.env - AI features will fail.");
 // vertexai: false দেওয়া আছে, যাতে কম্পিউটারের GOOGLE_GENAI_USE_VERTEXAI সেটিং এটা বদলে না দেয়
 let ai = new GoogleGenAI({ apiKey: GEMINI_KEY, vertexai: false });
 let aiMode = "gemini-api";
@@ -482,7 +490,7 @@ app.get("/api/ai/health", requireAuth, wrap(async (req, res) => {
     const reply = await gemini("Reply with the single word OK.", "You are a health check.");
     res.json({ ok: true, model: MODEL, mode: aiMode, keyLoaded: !!GEMINI_KEY, reply: reply.trim().slice(0, 20) });
   } catch (err) {
-    res.status(502).json({ ok: false, model: MODEL, mode: aiMode, keyLoaded: !!GEMINI_KEY, keyPrefix: GEMINI_KEY.slice(0, 4), error: aiError(err) });
+    res.status(502).json({ ok: false, model: MODEL, mode: aiMode, keyLoaded: !!GEMINI_KEY, error: aiError(err) });
   }
 }));
 
@@ -507,11 +515,30 @@ app.post("/api/ai/analyze-batch", requireAuth, wrap(async (req, res) => {
   }
 }));
 
+app.get("/api/ai/query", ...auth, wrap(async (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit) || 50, 1), 200);
+  const messages = await chatMessagesCol
+    .find({ organizationId: req.orgId, userId: req.user.id })
+    .sort({ createdAt: 1 })
+    .limit(limit)
+    .toArray();
+  res.json({ messages });
+}));
+
 app.post("/api/ai/query", ...auth, wrap(async (req, res) => {
   const question = String(req.body.question || "").trim().slice(0, 8000);
   if (!question) return res.status(400).json({ error: "Question is required." });
   const history = (Array.isArray(req.body.history) ? req.body.history : []).slice(-6)
     .map((h) => `${h.sender === "user" ? "User" : "Assistant"}: ${String(h.text).slice(0, 500)}`).join("\n");
+
+  const userMsg = {
+    organizationId: req.orgId,
+    userId: req.user.id,
+    sender: "user",
+    text: question,
+    createdAt: new Date(),
+  };
+  await chatMessagesCol.insertOne(userMsg);
 
   const match = { organizationId: req.orgId, aiStatus: "done" };
   const [total, recent, bySentiment, themes] = await Promise.all([
@@ -522,9 +549,17 @@ app.post("/api/ai/query", ...auth, wrap(async (req, res) => {
   ]);
 
   // সংরক্ষিত feedback নেই এবং প্রশ্ন ছোট হলে AI কল না করে সরাসরি জানিয়ে দেয়।
-  // প্রশ্ন বড় হলে (ইউজার review পেস্ট করেছে) সেটা সরাসরি analyze করা হয়।
   if (!total && question.length < 200) {
-    return res.json({ answer: "There is no saved feedback yet. Add feedback, or paste some reviews here (or in the Analyze tab) and I will analyze them.", basedOn: 0, total: 0 });
+    const fallbackAnswer = "There is no saved feedback yet. Add feedback, or paste some reviews here (or in the Analyze tab) and I will analyze them.";
+    const assistantMsg = {
+      organizationId: req.orgId,
+      userId: req.user.id,
+      sender: "assistant",
+      text: fallbackAnswer,
+      createdAt: new Date(),
+    };
+    await chatMessagesCol.insertOne(assistantMsg);
+    return res.json({ answer: fallbackAnswer, basedOn: 0, total, userMessage: userMsg, assistantMessage: assistantMsg });
   }
 
   const sentiment = {};
@@ -545,7 +580,15 @@ ${history ? `Conversation so far:\n${history}\n\n` : ""}User message: ${question
 2. Otherwise answer the question using only the saved data provided. Use the overall stats for totals and percentages, and the recent items for examples and trends. If the data cannot answer it, say so.
 Be concise. Use short paragraphs or numbered points and **bold** for key figures.`
     );
-    res.json({ answer, basedOn: recent.length, total });
+    const assistantMsg = {
+      organizationId: req.orgId,
+      userId: req.user.id,
+      sender: "assistant",
+      text: answer,
+      createdAt: new Date(),
+    };
+    await chatMessagesCol.insertOne(assistantMsg);
+    res.json({ answer, basedOn: recent.length, total, userMessage: userMsg, assistantMessage: assistantMsg });
   } catch (err) {
     console.error(err.message);
     res.status(502).json({ error: aiError(err) });
@@ -651,6 +694,9 @@ app.use((req, res) => res.status(404).json({ error: "Route not found." }));
 (async () => {
   await client.connect();
   await members.createIndex({ userId: 1 }, { unique: true });
+  await members.createIndex({ organizationId: 1 });
+  await orgs.createIndex({ _id: 1, organizationId: 1 }, { sparse: true });
   await feedbackCol.createIndex({ organizationId: 1, createdAt: -1 });
+  await chatMessagesCol.createIndex({ organizationId: 1, userId: 1, createdAt: 1 });
   app.listen(port, () => console.log(`LOOP server running on port ${port}`));
 })().catch((err) => { console.error("Failed to start:", err); process.exit(1); });
