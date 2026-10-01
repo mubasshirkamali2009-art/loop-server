@@ -1,9 +1,30 @@
 {
   "dependencies": {
     "@better-auth/mongo-adapter": "^1.7.6",
+    "@google/genai": "^2.25.0",
     "better-auth": "^1.7.6",
-    "dotenv": "^18.0.4",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.5",
     "express": "^5.2.1",
     "mongodb": "^7.7.0"
-  }
+  },
+  "name": "loop-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mubasshirkamali2009-art/loop-server.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mubasshirkamali2009-art/loop-server/issues"
+  },
+  "homepage": "https://github.com/mubasshirkamali2009-art/loop-server#readme"
 }
