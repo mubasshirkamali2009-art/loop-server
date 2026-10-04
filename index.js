@@ -10,7 +10,25 @@ const { GoogleGenAI } = require("@google/genai");
 const app = express();
 const port = process.env.PORT || 5000;
 
-app.use(cors({ origin: process.env.CLIENT_URL || "http://localhost:3000", credentials: true }));
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  "http://localhost:3000",
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith(".vercel.app") ||
+      origin.includes("localhost")
+    ) {
+      return callback(null, origin);
+    }
+    return callback(null, origin);
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: "1mb" }));
 
 // ---------- Database ----------
