@@ -1,5 +1,5 @@
-const dns = require("node:dns");
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
+// const dns = require("node:dns");
+// dns.setServers(["1.1.1.1", "8.8.8.8"]);
 require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 
 const express = require("express");
@@ -700,3 +700,5 @@ app.use((req, res) => res.status(404).json({ error: "Route not found." }));
   await chatMessagesCol.createIndex({ organizationId: 1, userId: 1, createdAt: 1 });
   app.listen(port, () => console.log(`LOOP server running on port ${port}`));
 })().catch((err) => { console.error("Failed to start:", err); process.exit(1); });
+
+module.exports = app;
